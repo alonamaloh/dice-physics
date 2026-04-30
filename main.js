@@ -1,0 +1,430 @@
+import * as THREE from 'three';
+import { V, Die, World } from './physics.js?v=e153451';
+import { DiceRenderer, topFaceValue } from './render.js?v=e153451';
+
+const canvas = document.getElementById('stage');
+const resultEl = document.getElementById('result');
+const rollBtn = document.getElementById('roll');
+const countInput = document.getElementById('count');
+
+const DIE_SIZE = 0.85;
+// Standard tray bounds. Ceiling at 5 lets dice pile freely on impact;
+// KE-only settle test means we don't need a low ceiling to suppress
+// stacking.
+const BOUNDS = {minX: -3.6, maxX: 3.6, minZ: -3.6, maxZ: 3.6, maxY: 5};
+
+const world = new World({
+  gravity: -45,
+  damping: 0.997,
+  friction: 0.03,
+  bounds: BOUNDS,
+  iterations: 8,
+});
+
+const renderer = new DiceRenderer(canvas, {
+  bounds: BOUNDS,
+  dieSize: DIE_SIZE,
+});
+
+const PAUSE_MS = 350;
+const TRANSITION_MS = 550;
+const ROW_GAP = 0.25;
+
+// --- Click synth -----------------------------------------------------------
+// A single AudioContext, lazily created on the first user gesture (browsers,
+// and especially iOS Safari, block AudioContext.start() until the user
+// interacts). iOS additionally requires that a sound be played from within
+// the unlocking gesture — we use a one-sample silent buffer for that.
+let audioCtx = null;
+function unlockAudio() {
+  const Ctor = window.AudioContext || window.webkitAudioContext;
+  if (!Ctor) return;
+  if (!audioCtx) {
+    audioCtx = new Ctor();
+    // Silent buffer to satisfy iOS's "must play sound from gesture" rule.
+    try {
+      const buf = audioCtx.createBuffer(1, 1, 22050);
+      const src = audioCtx.createBufferSource();
+      src.buffer = buf;
+      src.connect(audioCtx.destination);
+      src.start(0);
+    } catch (_) {}
+  }
+  // Explicit resume — newly created contexts on iOS start `suspended`,
+  // and start() on a buffer source does not auto-resume. Calling resume()
+  // synchronously from inside the gesture handler is the only path that
+  // reliably flips iOS Safari into the running state.
+  if (audioCtx.state !== 'running') {
+    audioCtx.resume().catch(() => {});
+  }
+}
+
+// One short noise burst, exp-decay envelope, bandpass-filtered to a high
+// "tick" frequency. Volume scales with the impact speed (m/s).
+function playClick(speed, freq = 2200) {
+  if (!audioCtx) return;
+  const sr = audioCtx.sampleRate;
+  const dur = 0.05;
+  const len = Math.floor(dur * sr);
+  const buf = audioCtx.createBuffer(1, len, sr);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < len; i++) {
+    const t = i / sr;
+    data[i] = (Math.random() * 2 - 1) * Math.exp(-t / 0.010);
+  }
+  const src = audioCtx.createBufferSource();
+  src.buffer = buf;
+  const bp = audioCtx.createBiquadFilter();
+  bp.type = 'bandpass';
+  bp.frequency.value = freq;
+  bp.Q.value = 4;
+  const gain = audioCtx.createGain();
+  // Volume curve: speed=0.5 m/s → barely audible; 5 m/s → near max.
+  const v = Math.max(0, Math.min(1, (speed - 0.4) / 5.0));
+  gain.gain.value = v * v * 0.6;
+  src.connect(bp); bp.connect(gain); gain.connect(audioCtx.destination);
+  src.start();
+  src.stop(audioCtx.currentTime + dur + 0.005);
+}
+
+function consumeAudioEvents() {
+  if (!audioCtx) { world.events.length = 0; return; }
+  for (const e of world.events) {
+    if (e.speed < 0.4) continue; // skip near-silent contacts
+    if (e.type === 'ground') {
+      playClick(e.speed, 1700);
+    } else if (e.type === 'pair') {
+      playClick(e.speed, 2600);
+    }
+  }
+  world.events.length = 0;
+}
+
+function spawnDice(n) {
+  world.dice = [];
+  for (let i = 0; i < n; i++) {
+    const startX = -1.3 + Math.random() * 0.6;
+    const startZ = -1.3 + Math.random() * 0.6;
+    // Spawn well under the low ceiling (1.5). Top of an axis-aligned die
+    // at this y-centre tops out at ~1.475, just below the clamp.
+    const startY = 0.95 + Math.random() * 0.10;
+    const die = new Die(DIE_SIZE, {x: startX, y: startY, z: startZ});
+    const ax = V.norm({
+      x: Math.random() - 0.5,
+      y: Math.random() - 0.5,
+      z: Math.random() - 0.5,
+    });
+    die.rotateAbout(ax, Math.random() * Math.PI * 2);
+    const linVel = {
+      x: 2.0 + Math.random() * 1.2,
+      y: -0.4 + Math.random() * 0.3,
+      z: 2.0 + Math.random() * 1.2,
+    };
+    const angVel = {
+      x: (Math.random() - 0.5) * 30,
+      y: (Math.random() - 0.5) * 30,
+      z: (Math.random() - 0.5) * 30,
+    };
+    die.setMotion(linVel, angVel, 1/60);
+    world.dice.push(die);
+  }
+}
+
+// Phases of one rolling cycle:
+//   'rolling'    — physics is running; waiting for dice to settle
+//   'pause'      — settled; brief delay before reformatting
+//   'transition' — sliding settled dice toward their row positions
+//   'display'    — held at row positions until the next roll
+let phase = 'rolling';
+let settledFrames = 0;
+let pauseStart = 0;
+let transitionStart = 0;
+let transitionFrom = [];
+let transitionTo = [];
+let lastT = performance.now();
+let rollingStart = performance.now();
+let stuckLogged = false;
+
+// If the dice still haven't settled after 10s, dump per-die state to the
+// console. The most useful fields for diagnosing a "won't stop rolling"
+// die are the per-substep displacement (a velocity proxy) and the
+// min/max particle y — together they reveal whether the die is bouncing
+// off geometry, flying through air, or churning in place against its
+// own constraints.
+const SUB_RATE = 240; // matches the substep rate in frame()
+function logStuckState() {
+  const elapsed = ((performance.now() - rollingStart) / 1000).toFixed(2);
+  console.warn(`dice-physics: not settled after ${elapsed}s`);
+  for (let i = 0; i < world.dice.length; i++) {
+    const d = world.dice[i];
+    const c = d.center();
+    let avgVx = 0, avgVy = 0, avgVz = 0;
+    let minY = Infinity, maxY = -Infinity;
+    for (let p = 0; p < 8; p++) {
+      avgVx += d.x[p].x - d.xPrev[p].x;
+      avgVy += d.x[p].y - d.xPrev[p].y;
+      avgVz += d.x[p].z - d.xPrev[p].z;
+      minY = Math.min(minY, d.x[p].y);
+      maxY = Math.max(maxY, d.x[p].y);
+    }
+    avgVx = (avgVx / 8) * SUB_RATE;
+    avgVy = (avgVy / 8) * SUB_RATE;
+    avgVz = (avgVz / 8) * SUB_RATE;
+    console.warn(`die ${i}`, {
+      center: {x: +c.x.toFixed(3), y: +c.y.toFixed(3), z: +c.z.toFixed(3)},
+      vCenterMS: {x: +avgVx.toFixed(2), y: +avgVy.toFixed(2), z: +avgVz.toFixed(2)},
+      kineticEnergy: d.kineticEnergy().toExponential(3),
+      minY: +minY.toFixed(3),
+      maxY: +maxY.toFixed(3),
+      onGround: !!d._onGround,
+      particles:     d.x.map(p => `(${p.x.toFixed(2)},${p.y.toFixed(2)},${p.z.toFixed(2)})`),
+      particlesPrev: d.xPrev.map(p => `(${p.x.toFixed(2)},${p.y.toFixed(2)},${p.z.toFixed(2)})`),
+    });
+  }
+}
+
+function showResult() {
+  // Read values in on-screen left-to-right order — same x-sort the
+  // transition uses to assign dice to row slots, so the readout matches
+  // the visual ordering during both pause and display phases.
+  const sorted = [...world.dice].sort((a, b) => a.center().x - b.center().x);
+  const values = sorted.map(topFaceValue);
+  resultEl.textContent = 'rolled: ' + values.join('  ') +
+    '   (sum ' + values.reduce((a, b) => a + b, 0) + ')';
+}
+
+function startPause() {
+  showResult();
+  pauseStart = performance.now();
+  phase = 'pause';
+}
+
+// Workspace objects reused across frames to avoid per-frame allocations.
+const _q = new THREE.Quaternion();
+const _v = new THREE.Vector3();
+const _m = new THREE.Matrix4();
+
+// Pull the die's current orthonormal rotation as a Three.Quaternion.
+function readDieQuat(die, out) {
+  const axes = die.axes();
+  const ax = V.norm(axes.x);
+  const dot = V.dot(ax, axes.y);
+  const ay = V.norm({
+    x: axes.y.x - ax.x * dot,
+    y: axes.y.y - ax.y * dot,
+    z: axes.y.z - ax.z * dot,
+  });
+  const az = V.cross(ax, ay);
+  _m.set(
+    ax.x, ay.x, az.x, 0,
+    ax.y, ay.y, az.y, 0,
+    ax.z, ay.z, az.z, 0,
+    0,    0,    0,    1,
+  );
+  out.setFromRotationMatrix(_m);
+}
+
+// Snap a near-axis-aligned vector to the closest world axis (with sign),
+// optionally excluding an axis index already taken.
+function snapAxis(v, excludeIdx) {
+  const ax = excludeIdx === 0 ? -Infinity : Math.abs(v.x);
+  const ay = excludeIdx === 1 ? -Infinity : Math.abs(v.y);
+  const az = excludeIdx === 2 ? -Infinity : Math.abs(v.z);
+  if (ax >= ay && ax >= az) return {axis: {x: Math.sign(v.x) || 1, y: 0, z: 0}, idx: 0};
+  if (ay >= az)             return {axis: {x: 0, y: Math.sign(v.y) || 1, z: 0}, idx: 1};
+  return                           {axis: {x: 0, y: 0, z: Math.sign(v.z) || 1}, idx: 2};
+}
+
+// Build the closest cube-symmetry rotation: snap each body axis to the
+// nearest available world axis, then make z = x × y to keep right-handed.
+function readSnappedQuat(die, out) {
+  const axes = die.axes();
+  const ax = V.norm(axes.x);
+  const dot = V.dot(ax, axes.y);
+  const ay = V.norm({
+    x: axes.y.x - ax.x * dot,
+    y: axes.y.y - ax.y * dot,
+    z: axes.y.z - ax.z * dot,
+  });
+  const sx = snapAxis(ax, -1);
+  const sy = snapAxis(ay, sx.idx);
+  const sz = V.cross(sx.axis, sy.axis);
+  _m.set(
+    sx.axis.x, sy.axis.x, sz.x, 0,
+    sx.axis.y, sy.axis.y, sz.y, 0,
+    sx.axis.z, sy.axis.z, sz.z, 0,
+    0,         0,         0,    1,
+  );
+  out.setFromRotationMatrix(_m);
+}
+
+function startTransition() {
+  const n = world.dice.length;
+  const spacing = DIE_SIZE + ROW_GAP;
+  const totalW = (n - 1) * spacing;
+  // Optimal slot assignment: sort dice by current x and match to slots in
+  // ascending order. For collinear targets and any cost f(d)=√(dx²+dz²)
+  // (or really, any function increasing in |dx|), this is provably the
+  // minimum-total-distance permutation by the rearrangement inequality.
+  const order = world.dice
+    .map((d, i) => ({i, x: d.center().x}))
+    .sort((a, b) => a.x - b.x)
+    .map(o => o.i);
+  transitionFrom = world.dice.map(d => {
+    const c = d.center();
+    const q = new THREE.Quaternion();
+    readDieQuat(d, q);
+    return {center: {x: c.x, y: c.y, z: c.z}, quat: q};
+  });
+  transitionTo = new Array(n);
+  for (let k = 0; k < n; k++) {
+    const dieIdx = order[k];
+    const q = new THREE.Quaternion();
+    readSnappedQuat(world.dice[dieIdx], q);
+    transitionTo[dieIdx] = {
+      center: {x: -totalW / 2 + k * spacing, y: DIE_SIZE / 2, z: 0},
+      quat: q,
+    };
+  }
+  transitionStart = performance.now();
+  phase = 'transition';
+}
+
+// Place each particle at center + R(quat) * canonical_body_offset, and zero
+// the implicit velocity so no leftover momentum carries into a future step.
+function setDieTransform(die, center, quat) {
+  const L = die.L;
+  for (let i = 0; i < 8; i++) {
+    const bx = (i & 1)        ? L / 2 : -L / 2;
+    const by = ((i >> 1) & 1) ? L / 2 : -L / 2;
+    const bz = ((i >> 2) & 1) ? L / 2 : -L / 2;
+    _v.set(bx, by, bz).applyQuaternion(quat);
+    die.x[i].x = center.x + _v.x;
+    die.x[i].y = center.y + _v.y;
+    die.x[i].z = center.z + _v.z;
+    die.xPrev[i].x = die.x[i].x;
+    die.xPrev[i].y = die.x[i].y;
+    die.xPrev[i].z = die.x[i].z;
+  }
+}
+
+function easeInOutCubic(t) {
+  return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+}
+
+// Place 5 dice in their final row positions showing the requested face
+// values, so the page opens with the dice "already settled" and the
+// user has to click to see them roll.
+function setupInitialDisplay(faces) {
+  const n = faces.length;
+  const spacing = DIE_SIZE + ROW_GAP;
+  const totalW = (n - 1) * spacing;
+  // Body axis (in canonical body frame) that needs to point world +Y so
+  // the named face value reads on top. Mirrors PIP_COUNTS in render.js:
+  // +X→1, -X→6, +Y→2, -Y→5, +Z→3, -Z→4.
+  const bodyUpForFace = {
+    1: new THREE.Vector3( 1,  0,  0),
+    6: new THREE.Vector3(-1,  0,  0),
+    2: new THREE.Vector3( 0,  1,  0),
+    5: new THREE.Vector3( 0, -1,  0),
+    3: new THREE.Vector3( 0,  0,  1),
+    4: new THREE.Vector3( 0,  0, -1),
+  };
+  const worldY = new THREE.Vector3(0, 1, 0);
+  world.dice = [];
+  for (let i = 0; i < n; i++) {
+    const die = new Die(DIE_SIZE, {x: 0, y: 0, z: 0});
+    const q = new THREE.Quaternion().setFromUnitVectors(bodyUpForFace[faces[i]], worldY);
+    const center = {x: -totalW / 2 + i * spacing, y: DIE_SIZE / 2, z: 0};
+    setDieTransform(die, center, q);
+    world.dice.push(die);
+  }
+  phase = 'display';
+}
+
+function frame(t) {
+  const dt = Math.min(0.033, (t - lastT) / 1000);
+  lastT = t;
+
+  if (phase === 'rolling') {
+    const sub = 1 / 240;
+    let acc = dt;
+    while (acc > 0) {
+      world.step(Math.min(sub, acc));
+      acc -= sub;
+    }
+    consumeAudioEvents();
+    // Two-tier settle test:
+    //   • Low KE + low PE (centre below 0.6·L → resting on a face, not
+    //     edge/corner balanced) ⇒ settle immediately.
+    //   • Low KE only (cocked) ⇒ give gravity up to 60 frames (~1 s) to
+    //     resolve the unstable balance, then settle anyway.
+    if (world.dice.length > 0 && world.isSettled(2e-5)) {
+      settledFrames++;
+      const lowPE = world.isSettled(2e-5, DIE_SIZE * 0.6);
+      if (lowPE || settledFrames >= 60) startPause();
+    } else {
+      settledFrames = 0;
+    }
+    if (!stuckLogged && performance.now() - rollingStart > 10000) {
+      logStuckState();
+      stuckLogged = true;
+    }
+  } else if (phase === 'pause') {
+    if (performance.now() - pauseStart >= PAUSE_MS) startTransition();
+  } else if (phase === 'transition') {
+    const u = Math.min(1, (performance.now() - transitionStart) / TRANSITION_MS);
+    const e = easeInOutCubic(u);
+    for (let i = 0; i < world.dice.length; i++) {
+      const f = transitionFrom[i];
+      const tt = transitionTo[i];
+      _q.slerpQuaternions(f.quat, tt.quat, e);
+      const c = {
+        x: f.center.x + (tt.center.x - f.center.x) * e,
+        y: f.center.y + (tt.center.y - f.center.y) * e,
+        z: f.center.z + (tt.center.z - f.center.z) * e,
+      };
+      setDieTransform(world.dice[i], c, _q);
+    }
+    if (u >= 1) phase = 'display';
+  }
+  // 'display' phase: hold position until next roll.
+
+  renderer.update(world.dice);
+  renderer.render();
+  requestAnimationFrame(frame);
+}
+
+function roll() {
+  const n = Math.max(1, Math.min(8, parseInt(countInput.value, 10) || 5));
+  resultEl.textContent = '';
+  settledFrames = 0;
+  phase = 'rolling';
+  rollingStart = performance.now();
+  stuckLogged = false;
+  spawnDice(n);
+  // Drop any contact events from the spawn position-clobbering so the very
+  // first frame doesn't fire a phantom click.
+  world.events.length = 0;
+  world._pairContact = new Set();
+  for (const d of world.dice) d._onGround = false;
+}
+
+// Wrap roll() so audio unlocks happen *inside* the gesture's call stack —
+// some iOS versions invalidate the context if it's resumed asynchronously
+// from a non-gesture context.
+function userRoll() {
+  unlockAudio();
+  roll();
+}
+rollBtn.addEventListener('click', userRoll);
+canvas.addEventListener('click', userRoll);
+window.addEventListener('keydown', (e) => {
+  if (e.key === ' ' || e.key === 'Enter') {
+    e.preventDefault();
+    userRoll();
+  }
+});
+
+setupInitialDisplay([1, 2, 3, 4, 5]);
+requestAnimationFrame(frame);

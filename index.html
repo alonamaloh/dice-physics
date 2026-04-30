@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Dice Physics Demo</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: #14181a;
+    color: #d8d4cc;
+    font: 15px/1.4 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
+  #app {
+    display: flex; flex-direction: column;
+    height: 100%;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right)
+            env(safe-area-inset-bottom) env(safe-area-inset-left);
+  }
+  header {
+    display: flex; align-items: center; gap: 12px;
+    padding: 10px 14px;
+    border-bottom: 1px solid #222;
+  }
+  header h1 {
+    margin: 0; font-size: 16px; font-weight: 500;
+    letter-spacing: 0.04em; color: #cfc8b8;
+  }
+  header .spacer { flex: 1; }
+  header label { color: #8b867d; }
+  header input[type="number"] {
+    width: 48px;
+    background: #1d2225; color: #e8e2d4;
+    border: 1px solid #333; border-radius: 4px;
+    padding: 4px 6px; font: inherit;
+  }
+  header button {
+    background: #5a6e4f; color: #f1ede0;
+    border: 0; border-radius: 6px;
+    padding: 7px 14px; font: inherit; font-weight: 500;
+    cursor: pointer;
+  }
+  header button:hover { background: #6c8260; }
+  header button:active { background: #4a5c41; }
+  #stage-wrap {
+    flex: 1; position: relative;
+    min-height: 0;
+  }
+  #stage {
+    width: 100%; height: 100%;
+    display: block;
+    touch-action: manipulation;
+  }
+  #result {
+    position: absolute; left: 0; right: 0; bottom: 12px;
+    text-align: center;
+    color: #111; letter-spacing: 0.06em;
+    font-size: 16px; font-weight: 500;
+    pointer-events: none;
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>DICE PHYSICS</h1>
+    <div class="spacer"></div>
+    <label for="count">dice</label>
+    <input id="count" type="number" min="1" max="8" value="5">
+    <button id="roll">roll</button>
+  </header>
+  <div id="stage-wrap">
+    <canvas id="stage"></canvas>
+    <div id="result"></div>
+  </div>
+</div>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.165.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.165.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module" src="main.js?v=e153451"></script>
+</body>
+</html>
