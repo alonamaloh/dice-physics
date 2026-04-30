@@ -45,6 +45,29 @@
   }
   header button:hover { background: #6c8260; }
   header button:active { background: #4a5c41; }
+  /* Sound-tuning panel: collapsed summary in the header bar; expands to a
+     floating grid of labelled sliders. */
+  #sound-panel { position: relative; font-size: 13px; }
+  #sound-panel summary {
+    cursor: pointer; padding: 4px 10px; list-style: none;
+    background: #1d2225; color: #cfc8b8; border-radius: 4px;
+    user-select: none; border: 1px solid #333;
+  }
+  #sound-panel summary::-webkit-details-marker { display: none; }
+  #sound-panel summary::after { content: " ▾"; opacity: 0.6; }
+  #sound-panel[open] summary::after { content: " ▴"; }
+  #sound-panel .grid {
+    position: absolute; top: calc(100% + 6px); right: 0;
+    background: #1d2225; padding: 12px 14px;
+    border: 1px solid #333; border-radius: 6px;
+    display: grid; grid-template-columns: auto 160px auto;
+    align-items: center; gap: 8px 12px;
+    min-width: 320px; z-index: 10;
+    box-shadow: 0 6px 24px rgba(0,0,0,0.4);
+  }
+  #sound-panel .grid label { color: #cfc8b8; white-space: nowrap; }
+  #sound-panel .grid output { color: #8b867d; text-align: right; min-width: 4em; font-variant-numeric: tabular-nums; }
+  #sound-panel .grid input[type=range] { width: 100%; }
   #stage-wrap {
     flex: 1; position: relative;
     min-height: 0;
@@ -68,6 +91,34 @@
   <header>
     <h1>DICE PHYSICS</h1>
     <div class="spacer"></div>
+    <details id="sound-panel">
+      <summary>sound</summary>
+      <div class="grid">
+        <label>Q</label>
+        <input type="range" id="s-q" min="0.5" max="8" step="0.1" value="4">
+        <output id="s-q-val">4.0</output>
+
+        <label>thud Hz</label>
+        <input type="range" id="s-flo" min="50" max="800" step="10" value="150">
+        <output id="s-flo-val">150</output>
+
+        <label>click Hz</label>
+        <input type="range" id="s-fhi" min="500" max="3000" step="10" value="1700">
+        <output id="s-fhi-val">1700</output>
+
+        <label>thud decay (ms)</label>
+        <input type="range" id="s-dlo" min="5" max="100" step="1" value="35">
+        <output id="s-dlo-val">35</output>
+
+        <label>click decay (ms)</label>
+        <input type="range" id="s-dhi" min="1" max="50" step="1" value="10">
+        <output id="s-dhi-val">10</output>
+
+        <label>master gain</label>
+        <input type="range" id="s-gain" min="0" max="1" step="0.01" value="0.6">
+        <output id="s-gain-val">0.60</output>
+      </div>
+    </details>
     <label for="count">dice</label>
     <input id="count" type="number" min="1" max="8" value="5">
     <button id="roll">roll</button>
@@ -85,6 +136,6 @@
   }
 }
 </script>
-<script type="module" src="main.js?v=1dcacb3"></script>
+<script type="module" src="main.js?v=c7f85f5"></script>
 </body>
 </html>

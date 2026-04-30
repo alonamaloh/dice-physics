@@ -1,6 +1,6 @@
 import * as THREE from 'three';
-import { V, Die, World } from './physics.js?v=1dcacb3';
-import { DiceRenderer, topFaceValue } from './render.js?v=1dcacb3';
+import { V, Die, World } from './physics.js?v=c7f85f5';
+import { DiceRenderer, topFaceValue } from './render.js?v=c7f85f5';
 
 const canvas = document.getElementById('stage');
 const resultEl = document.getElementById('result');
@@ -59,6 +59,16 @@ function unlockAudio() {
   }
 }
 
+// Tunable synth parameters, bound to the on-page slider panel.
+const soundParams = {
+  q: 4,
+  thudHz: 150,
+  clickHz: 1700,
+  thudDecayMs: 35,
+  clickDecayMs: 10,
+  gain: 0.6,
+};
+
 // One short noise burst, exp-decay envelope, bandpass-filtered. Lower
 // `freq` + longer `decayMs` give a thuddier sound; higher freq + shorter
 // decay give a clickier one. Volume scales with the impact speed (m/s).
@@ -79,11 +89,11 @@ function playClick(speed, freq = 2200, decayMs = 10) {
   const bp = audioCtx.createBiquadFilter();
   bp.type = 'bandpass';
   bp.frequency.value = freq;
-  bp.Q.value = 4;
+  bp.Q.value = soundParams.q;
   const gain = audioCtx.createGain();
   // Volume curve: speed=0.5 m/s → barely audible; 5 m/s → near max.
   const v = Math.max(0, Math.min(1, (speed - 0.4) / 5.0));
-  gain.gain.value = v * v * 0.6;
+  gain.gain.value = v * v * soundParams.gain;
   src.connect(bp); bp.connect(gain); gain.connect(audioCtx.destination);
   src.start();
   src.stop(audioCtx.currentTime + dur + 0.005);
@@ -94,12 +104,11 @@ function consumeAudioEvents() {
   for (const e of world.events) {
     if (e.speed < 0.4) continue; // skip near-silent contacts
     if (e.type === 'ground') {
-      // Speed-dependent timbre: low-speed contacts sound thuddy
-      // (~150 Hz, 35 ms decay), high-speed sound clicky (~1700 Hz,
-      // 10 ms decay). t ∈ [0,1] interpolates between the two.
+      // Speed-dependent timbre: low-speed contacts thuddy, high-speed
+      // clicky. t ∈ [0,1] interpolates the freq + decay sliders.
       const t = Math.max(0, Math.min(1, (e.speed - 0.5) / 4.5));
-      const freq = 150 + t * (1700 - 150);
-      const decayMs = 35 - t * 25;
+      const freq = soundParams.thudHz + t * (soundParams.clickHz - soundParams.thudHz);
+      const decayMs = soundParams.thudDecayMs + t * (soundParams.clickDecayMs - soundParams.thudDecayMs);
       playClick(e.speed, freq, decayMs);
     } else if (e.type === 'pair') {
       playClick(e.speed, 2600, 8);
@@ -424,6 +433,26 @@ function userRoll() {
   unlockAudio();
   roll();
 }
+// Bind the sound-tuning sliders to soundParams. Each slider has an
+// associated <output> element for the live value readout.
+function bindSoundSlider(id, key, format) {
+  const slider = document.getElementById(id);
+  const out = document.getElementById(id + '-val');
+  if (!slider || !out) return;
+  slider.value = soundParams[key];
+  out.textContent = format(soundParams[key]);
+  slider.addEventListener('input', () => {
+    soundParams[key] = parseFloat(slider.value);
+    out.textContent = format(soundParams[key]);
+  });
+}
+bindSoundSlider('s-q',    'q',            v => v.toFixed(1));
+bindSoundSlider('s-flo',  'thudHz',       v => Math.round(v).toString());
+bindSoundSlider('s-fhi',  'clickHz',      v => Math.round(v).toString());
+bindSoundSlider('s-dlo',  'thudDecayMs',  v => Math.round(v).toString());
+bindSoundSlider('s-dhi',  'clickDecayMs', v => Math.round(v).toString());
+bindSoundSlider('s-gain', 'gain',         v => v.toFixed(2));
+
 rollBtn.addEventListener('click', userRoll);
 canvas.addEventListener('click', userRoll);
 window.addEventListener('keydown', (e) => {
