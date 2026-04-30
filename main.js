@@ -1,6 +1,6 @@
 import * as THREE from 'three';
-import { V, Die, World } from './physics.js?v=a4d180e';
-import { DiceRenderer, topFaceValue } from './render.js?v=a4d180e';
+import { V, Die, World } from './physics.js?v=194dedb';
+import { DiceRenderer, topFaceValue } from './render.js?v=194dedb';
 
 const canvas = document.getElementById('stage');
 const resultEl = document.getElementById('result');
@@ -134,10 +134,15 @@ function spawnDice(n) {
       z: Math.random() - 0.5,
     });
     die.rotateAbout(ax, Math.random() * Math.PI * 2);
+    // Horizontal velocity in a random direction (not biased toward
+    // +X/+Z), so a single die doesn't follow the same trajectory every
+    // roll.
+    const speed = 2.0 + Math.random() * 1.2;
+    const heading = Math.random() * Math.PI * 2;
     const linVel = {
-      x: 2.0 + Math.random() * 1.2,
+      x: speed * Math.cos(heading),
       y: -0.4 + Math.random() * 0.3,
-      z: 2.0 + Math.random() * 1.2,
+      z: speed * Math.sin(heading),
     };
     const angVel = {
       x: (Math.random() - 0.5) * 30,
