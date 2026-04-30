@@ -1,6 +1,6 @@
 import * as THREE from 'three';
-import { V, Die, World } from './physics.js?v=232b02d';
-import { DiceRenderer, topFaceValue } from './render.js?v=232b02d';
+import { V, Die, World } from './physics.js?v=a4d180e';
+import { DiceRenderer, topFaceValue } from './render.js?v=a4d180e';
 
 const canvas = document.getElementById('stage');
 const resultEl = document.getElementById('result');
@@ -63,9 +63,11 @@ function unlockAudio() {
 const soundParams = {
   q: 4,
   thudHz: 150,
-  clickHz: 1700,
+  clickHz: 800,
   thudDecayMs: 35,
-  clickDecayMs: 10,
+  clickDecayMs: 18,
+  pairHz: 3500,
+  pairDecayMs: 5,
   gain: 0.6,
 };
 
@@ -111,7 +113,7 @@ function consumeAudioEvents() {
       const decayMs = soundParams.thudDecayMs + t * (soundParams.clickDecayMs - soundParams.thudDecayMs);
       playClick(e.speed, freq, decayMs);
     } else if (e.type === 'pair') {
-      playClick(e.speed, 2600, 8);
+      playClick(e.speed, soundParams.pairHz, soundParams.pairDecayMs);
     }
   }
   world.events.length = 0;
@@ -451,6 +453,8 @@ bindSoundSlider('s-flo',  'thudHz',       v => Math.round(v).toString());
 bindSoundSlider('s-fhi',  'clickHz',      v => Math.round(v).toString());
 bindSoundSlider('s-dlo',  'thudDecayMs',  v => Math.round(v).toString());
 bindSoundSlider('s-dhi',  'clickDecayMs', v => Math.round(v).toString());
+bindSoundSlider('s-pf',   'pairHz',       v => Math.round(v).toString());
+bindSoundSlider('s-pd',   'pairDecayMs',  v => Math.round(v).toString());
 bindSoundSlider('s-gain', 'gain',         v => v.toFixed(2));
 
 rollBtn.addEventListener('click', userRoll);
