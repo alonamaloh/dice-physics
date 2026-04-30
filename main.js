@@ -1,6 +1,6 @@
 import * as THREE from 'three';
-import { V, Die, World } from './physics.js?v=c7f85f5';
-import { DiceRenderer, topFaceValue } from './render.js?v=c7f85f5';
+import { V, Die, World } from './physics.js?v=232b02d';
+import { DiceRenderer, topFaceValue } from './render.js?v=232b02d';
 
 const canvas = document.getElementById('stage');
 const resultEl = document.getElementById('result');

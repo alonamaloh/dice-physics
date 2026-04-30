@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 
-import { V } from './physics.js?v=c7f85f5';
+import { V } from './physics.js?v=232b02d';
 
 // Explicit ColorManagement on — defaults to true in modern Three.js but
 // some Android Chrome builds report it as off, which causes textures to
