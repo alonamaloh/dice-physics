@@ -1,6 +1,6 @@
 import * as THREE from 'three';
-import { V, Die, World } from './physics.js?v=e153451';
-import { DiceRenderer, topFaceValue } from './render.js?v=e153451';
+import { V, Die, World } from './physics.js?v=1dcacb3';
+import { DiceRenderer, topFaceValue } from './render.js?v=1dcacb3';
 
 const canvas = document.getElementById('stage');
 const resultEl = document.getElementById('result');
@@ -59,18 +59,20 @@ function unlockAudio() {
   }
 }
 
-// One short noise burst, exp-decay envelope, bandpass-filtered to a high
-// "tick" frequency. Volume scales with the impact speed (m/s).
-function playClick(speed, freq = 2200) {
+// One short noise burst, exp-decay envelope, bandpass-filtered. Lower
+// `freq` + longer `decayMs` give a thuddier sound; higher freq + shorter
+// decay give a clickier one. Volume scales with the impact speed (m/s).
+function playClick(speed, freq = 2200, decayMs = 10) {
   if (!audioCtx) return;
   const sr = audioCtx.sampleRate;
-  const dur = 0.05;
+  const dur = Math.max(0.05, decayMs / 1000 * 5);
   const len = Math.floor(dur * sr);
   const buf = audioCtx.createBuffer(1, len, sr);
   const data = buf.getChannelData(0);
+  const tau = decayMs / 1000;
   for (let i = 0; i < len; i++) {
     const t = i / sr;
-    data[i] = (Math.random() * 2 - 1) * Math.exp(-t / 0.010);
+    data[i] = (Math.random() * 2 - 1) * Math.exp(-t / tau);
   }
   const src = audioCtx.createBufferSource();
   src.buffer = buf;
@@ -92,9 +94,15 @@ function consumeAudioEvents() {
   for (const e of world.events) {
     if (e.speed < 0.4) continue; // skip near-silent contacts
     if (e.type === 'ground') {
-      playClick(e.speed, 1700);
+      // Speed-dependent timbre: low-speed contacts sound thuddy
+      // (~150 Hz, 35 ms decay), high-speed sound clicky (~1700 Hz,
+      // 10 ms decay). t ∈ [0,1] interpolates between the two.
+      const t = Math.max(0, Math.min(1, (e.speed - 0.5) / 4.5));
+      const freq = 150 + t * (1700 - 150);
+      const decayMs = 35 - t * 25;
+      playClick(e.speed, freq, decayMs);
     } else if (e.type === 'pair') {
-      playClick(e.speed, 2600);
+      playClick(e.speed, 2600, 8);
     }
   }
   world.events.length = 0;
@@ -176,7 +184,7 @@ function logStuckState() {
       kineticEnergy: d.kineticEnergy().toExponential(3),
       minY: +minY.toFixed(3),
       maxY: +maxY.toFixed(3),
-      onGround: !!d._onGround,
+      onGround: d.x.some(p => p.y <= 1e-3),
       particles:     d.x.map(p => `(${p.x.toFixed(2)},${p.y.toFixed(2)},${p.z.toFixed(2)})`),
       particlesPrev: d.xPrev.map(p => `(${p.x.toFixed(2)},${p.y.toFixed(2)},${p.z.toFixed(2)})`),
     });
@@ -407,7 +415,6 @@ function roll() {
   // first frame doesn't fire a phantom click.
   world.events.length = 0;
   world._pairContact = new Set();
-  for (const d of world.dice) d._onGround = false;
 }
 
 // Wrap roll() so audio unlocks happen *inside* the gesture's call stack —

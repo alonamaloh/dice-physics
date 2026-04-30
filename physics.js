@@ -197,6 +197,28 @@ export class World {
         xi.z += vz;
       }
     }
+    // Floor-impact detection. After Verlet but before the constraint
+    // iterations clamp, a particle with x.y < 0 represents a real
+    // penetration; (xPrev.y - x.y) / dt is its true impact velocity. A
+    // velocity threshold filters out the gravity-tick on already-resting
+    // particles (their downward speed is just g·dt ≈ 0.2 m/s) and lets
+    // through real impacts (initial fall, tipping corner coming down,
+    // bounce-down). One event per die per substep, with the max impact
+    // speed across vertices that just hit.
+    const IMPACT_SPEED_MIN = 0.5;
+    for (let di = 0; di < this.dice.length; di++) {
+      const d = this.dice[di];
+      let maxImpact = 0;
+      for (let p = 0; p < 8; p++) {
+        if (d.x[p].y < 0) {
+          const v = (d.xPrev[p].y - d.x[p].y) / dt;
+          if (v > IMPACT_SPEED_MIN && v > maxImpact) maxImpact = v;
+        }
+      }
+      if (maxImpact > 0) {
+        this.events.push({type: 'ground', dieIdx: di, speed: maxImpact});
+      }
+    }
     // 2) Iteratively project constraints + collisions.
     for (let it = 0; it < this.iterations; it++) {
       for (const d of this.dice) {
@@ -287,25 +309,6 @@ export class World {
     // angular motion on subsequent steps.
     for (const d of this.dice) d.regularize();
 
-    // Rising-edge contact events: ground touches and dice-pair contacts.
-    for (let i = 0; i < this.dice.length; i++) {
-      const d = this.dice[i];
-      let touching = false;
-      let maxDownSpeed = 0;
-      for (let p = 0; p < 8; p++) {
-        if (d.x[p].y <= 1e-3) {
-          touching = true;
-          // Implicit downward velocity right before this step's clamp:
-          // (xPrev.y - x.y) / dt — positive if the particle was moving down.
-          const v = (d.xPrev[p].y - d.x[p].y) / dt;
-          if (v > maxDownSpeed) maxDownSpeed = v;
-        }
-      }
-      if (touching && !d._onGround) {
-        this.events.push({type: 'ground', dieIdx: i, speed: maxDownSpeed});
-      }
-      d._onGround = touching;
-    }
     // Pair contacts: in-contact when centres are within ~L*1.02. The hard
     // separator keeps centres ≥ L apart, so this rises only when two dice
     // genuinely meet, not from numerical jitter at the boundary.
