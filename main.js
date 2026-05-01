@@ -1,6 +1,6 @@
 import * as THREE from 'three';
-import { V, Die, World } from './physics.js?v=0537416';
-import { DiceRenderer, topFaceValue } from './render.js?v=0537416';
+import { V, Die, World } from './physics.js?v=7c77431';
+import { DiceRenderer, topFaceValue } from './render.js?v=7c77431';
 
 const canvas = document.getElementById('stage');
 const resultEl = document.getElementById('result');
@@ -20,7 +20,7 @@ const BOUNDS = {minX: -3.6, maxX: 3.6, minZ: -7, maxZ: 7, maxY: 5};
 const DISABLED_BOUNDS = {minX: -1000, maxX: 1000, minZ: -1000, maxZ: 1000};
 
 const world = new World({
-  gravity: -90,
+  gravity: -45,
   damping: 0.997,
   friction: 0.03,
   bounds: BOUNDS,
