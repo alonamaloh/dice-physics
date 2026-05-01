@@ -45,18 +45,19 @@
   }
   header button:hover { background: #6c8260; }
   header button:active { background: #4a5c41; }
-  /* Sound-tuning panel: collapsed summary in the header bar; expands to a
-     floating grid of labelled sliders. */
-  #sound-panel { position: relative; font-size: 13px; }
-  #sound-panel summary {
+  /* Tunable parameter panels: each is a <details> in the header bar that
+     expands to a floating grid of labelled sliders. Same style for sound
+     and physics panels. */
+  .ctl-panel { position: relative; font-size: 13px; }
+  .ctl-panel summary {
     cursor: pointer; padding: 4px 10px; list-style: none;
     background: #1d2225; color: #cfc8b8; border-radius: 4px;
     user-select: none; border: 1px solid #333;
   }
-  #sound-panel summary::-webkit-details-marker { display: none; }
-  #sound-panel summary::after { content: " ▾"; opacity: 0.6; }
-  #sound-panel[open] summary::after { content: " ▴"; }
-  #sound-panel .grid {
+  .ctl-panel summary::-webkit-details-marker { display: none; }
+  .ctl-panel summary::after { content: " ▾"; opacity: 0.6; }
+  .ctl-panel[open] summary::after { content: " ▴"; }
+  .ctl-panel .grid {
     position: absolute; top: calc(100% + 6px); right: 0;
     background: #1d2225; padding: 12px 14px;
     border: 1px solid #333; border-radius: 6px;
@@ -65,10 +66,10 @@
     min-width: 320px; z-index: 10;
     box-shadow: 0 6px 24px rgba(0,0,0,0.4);
   }
-  #sound-panel .grid label { color: #cfc8b8; white-space: nowrap; cursor: help; }
-  #sound-panel .grid output { color: #8b867d; text-align: right; min-width: 4em; font-variant-numeric: tabular-nums; }
-  #sound-panel .grid input[type=range] { width: 100%; }
-  #sound-panel .grid .hint {
+  .ctl-panel .grid label { color: #cfc8b8; white-space: nowrap; cursor: help; }
+  .ctl-panel .grid output { color: #8b867d; text-align: right; min-width: 4em; font-variant-numeric: tabular-nums; }
+  .ctl-panel .grid input[type=range] { width: 100%; }
+  .ctl-panel .grid .hint {
     grid-column: 1 / -1; margin: 0 0 4px 0;
     color: #8b867d; font-size: 12px; line-height: 1.4;
     max-width: 320px;
@@ -96,22 +97,53 @@
   <header>
     <h1>DICE PHYSICS</h1>
     <div class="spacer"></div>
-    <details id="sound-panel">
+    <details id="view-panel" class="ctl-panel">
+      <summary>view</summary>
+      <div class="grid">
+        <p class="hint">Camera position. Updates live.</p>
+        <label title="Camera tilt from vertical. 0° = straight down; 60° = oblique.">tilt (°)</label>
+        <input type="range" id="v-tilt" min="0" max="60" step="1" value="0">
+        <output id="v-tilt-val">0</output>
+      </div>
+    </details>
+    <details id="physics-panel" class="ctl-panel">
+      <summary>physics</summary>
+      <div class="grid">
+        <p class="hint">Live-tunable physics. Changes take effect on the next substep, no need to re-roll.</p>
+
+        <label title="Vertical acceleration. More negative = snappier falls.">gravity</label>
+        <input type="range" id="p-grav" min="-200" max="-10" step="1" value="-90">
+        <output id="p-grav-val">-90</output>
+
+        <label title="Per-substep velocity multiplier (air drag). 1.0 = no drag; lower = thicker air.">damping</label>
+        <input type="range" id="p-damp" min="0.95" max="1" step="0.001" value="0.997">
+        <output id="p-damp-val">0.997</output>
+
+        <label title="Floor-impact friction lerp coefficient. 0 = full slide, 1 = no slide on contact.">friction</label>
+        <input type="range" id="p-fric" min="0" max="1" step="0.01" value="0.03">
+        <output id="p-fric-val">0.03</output>
+
+        <label title="Constraint projection passes per substep. More = stiffer cubes + more CPU.">iterations</label>
+        <input type="range" id="p-iter" min="1" max="16" step="1" value="8">
+        <output id="p-iter-val">8</output>
+      </div>
+    </details>
+    <details id="sound-panel" class="ctl-panel">
       <summary>sound</summary>
       <div class="grid">
         <p class="hint">All ground contacts use the same synth: a noise burst run through a bandpass filter, with envelope decay. Slow contacts → thud end of the range; fast contacts → click end.</p>
 
         <label title="Bandpass filter resonance. Lower = broad / thuddy / wooden; higher = narrow / ringy / plasticky.">filter Q (resonance)</label>
-        <input type="range" id="s-q" min="0.5" max="8" step="0.1" value="4">
-        <output id="s-q-val">4.0</output>
+        <input type="range" id="s-q" min="0.5" max="8" step="0.1" value="3">
+        <output id="s-q-val">3.0</output>
 
         <label title="Bandpass center frequency for slow ground contacts.">thud freq, slow hits (Hz)</label>
-        <input type="range" id="s-flo" min="50" max="800" step="10" value="150">
-        <output id="s-flo-val">150</output>
+        <input type="range" id="s-flo" min="50" max="800" step="10" value="400">
+        <output id="s-flo-val">400</output>
 
         <label title="Bandpass center frequency for fast ground contacts.">click freq, fast hits (Hz)</label>
-        <input type="range" id="s-fhi" min="200" max="2000" step="10" value="800">
-        <output id="s-fhi-val">800</output>
+        <input type="range" id="s-fhi" min="200" max="2000" step="10" value="1200">
+        <output id="s-fhi-val">1200</output>
 
         <label title="How long the noise envelope rings for slow contacts.">thud decay, slow hits (ms)</label>
         <input type="range" id="s-dlo" min="5" max="100" step="1" value="35">
@@ -151,6 +183,6 @@
   }
 }
 </script>
-<script type="module" src="main.js?v=194dedb"></script>
+<script type="module" src="main.js?v=0537416"></script>
 </body>
 </html>

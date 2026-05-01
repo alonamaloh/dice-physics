@@ -1,6 +1,6 @@
 import * as THREE from 'three';
-import { V, Die, World } from './physics.js?v=194dedb';
-import { DiceRenderer, topFaceValue } from './render.js?v=194dedb';
+import { V, Die, World } from './physics.js?v=0537416';
+import { DiceRenderer, topFaceValue } from './render.js?v=0537416';
 
 const canvas = document.getElementById('stage');
 const resultEl = document.getElementById('result');
@@ -8,13 +8,19 @@ const rollBtn = document.getElementById('roll');
 const countInput = document.getElementById('count');
 
 const DIE_SIZE = 0.85;
-// Standard tray bounds. Ceiling at 5 lets dice pile freely on impact;
-// KE-only settle test means we don't need a low ceiling to suppress
-// stacking.
-const BOUNDS = {minX: -3.6, maxX: 3.6, minZ: -3.6, maxZ: 3.6, maxY: 5};
+// Tray bounds — extended in Z (±7) so the player-side spawn at z≈6
+// has room. Ceiling at 5 lets dice pile freely on impact; KE-only
+// settle test with drop-bounds-on-low-KE means we don't need a low
+// ceiling to suppress stacking.
+const BOUNDS = {minX: -3.6, maxX: 3.6, minZ: -7, maxZ: 7, maxY: 5};
+// "Disabled" bounds: walls placed far enough away that no clamp ever
+// triggers, no ceiling. Swap world.bounds to this once dice reach the
+// low-KE threshold so a die leaning on an invisible wall has a chance
+// to tip free.
+const DISABLED_BOUNDS = {minX: -1000, maxX: 1000, minZ: -1000, maxZ: 1000};
 
 const world = new World({
-  gravity: -45,
+  gravity: -90,
   damping: 0.997,
   friction: 0.03,
   bounds: BOUNDS,
@@ -61,9 +67,9 @@ function unlockAudio() {
 
 // Tunable synth parameters, bound to the on-page slider panel.
 const soundParams = {
-  q: 4,
-  thudHz: 150,
-  clickHz: 800,
+  q: 3.0,
+  thudHz: 400,
+  clickHz: 1200,
   thudDecayMs: 35,
   clickDecayMs: 18,
   pairHz: 3500,
@@ -121,12 +127,27 @@ function consumeAudioEvents() {
 
 function spawnDice(n) {
   world.dice = [];
+  // Spaced spawn so the constraint solver doesn't see overlaps (which
+  // would launch dice apart at 100s of m/s on the first substep).
+  // Single row up to 5; for 6+ dice we split into a lower and upper
+  // row stacked in Y so each row stays short enough that even the
+  // edge dice's tumbling corners (L·√3/2 ≈ 0.74) fit inside the
+  // ±3.6 X walls. Y separation between rows (~1.5) keeps the hard
+  // centre-distance constraint inactive.
+  const spawnSpacing = 1.0;
+  const useTwoRows = n > 5;
+  const lowerCount = useTwoRows ? Math.ceil(n / 2) : n;
+  const upperCount = n - lowerCount;
   for (let i = 0; i < n; i++) {
-    const startX = -1.3 + Math.random() * 0.6;
-    const startZ = -1.3 + Math.random() * 0.6;
-    // Spawn well under the low ceiling (1.5). Top of an axis-aligned die
-    // at this y-centre tops out at ~1.475, just below the clamp.
-    const startY = 0.95 + Math.random() * 0.10;
+    const inUpper = i >= lowerCount;
+    const rowIdx  = inUpper ? i - lowerCount : i;
+    const rowSize = inUpper ? upperCount : lowerCount;
+    const rowLineHalf = (rowSize - 1) * spawnSpacing / 2;
+    const startX = -rowLineHalf + rowIdx * spawnSpacing + (Math.random() - 0.5) * 0.08;
+    const startZ = 6.0 + (Math.random() - 0.5) * 0.3;
+    const startY = useTwoRows
+      ? (inUpper ? 4.5 : 3.0) + Math.random() * 0.3
+      : 3.0 + Math.random() * 1.0;
     const die = new Die(DIE_SIZE, {x: startX, y: startY, z: startZ});
     const ax = V.norm({
       x: Math.random() - 0.5,
@@ -134,15 +155,18 @@ function spawnDice(n) {
       z: Math.random() - 0.5,
     });
     die.rotateAbout(ax, Math.random() * Math.PI * 2);
-    // Horizontal velocity in a random direction (not biased toward
-    // +X/+Z), so a single die doesn't follow the same trajectory every
-    // roll.
-    const speed = 2.0 + Math.random() * 1.2;
-    const heading = Math.random() * Math.PI * 2;
+    // Horizontal velocity points roughly north (toward -Z, toward the
+    // top of the screen) with ±45° spread. Combined with the southern
+    // spawn, the dice arc across the visible table from the player's
+    // side toward the far end.
+    const speed = 4.0 + Math.random() * 2.4;
+    const heading = -Math.PI / 2 + (Math.random() - 0.5) * Math.PI / 2;
+    // Constant extra -Z bias on top of the heading's Z component so the
+    // throw carries dice well past centre toward the north wall.
     const linVel = {
       x: speed * Math.cos(heading),
-      y: -0.4 + Math.random() * 0.3,
-      z: speed * Math.sin(heading),
+      y: -0.8 + Math.random() * 0.6,
+      z: speed * Math.sin(heading) - 2.0,
     };
     const angVel = {
       x: (Math.random() - 0.5) * 30,
@@ -383,7 +407,11 @@ function frame(t) {
     //     edge/corner balanced) ⇒ settle immediately.
     //   • Low KE only (cocked) ⇒ give gravity up to 60 frames (~1 s) to
     //     resolve the unstable balance, then settle anyway.
+    // Once low-KE is reached, drop the bounding box so a die leaning
+    // against an invisible wall can topple free; bounds are restored
+    // when roll() starts a new cycle.
     if (world.dice.length > 0 && world.isSettled(2e-5)) {
+      if (world.bounds === BOUNDS) world.bounds = DISABLED_BOUNDS;
       settledFrames++;
       const lowPE = world.isSettled(2e-5, DIE_SIZE * 0.6);
       if (lowPE || settledFrames >= 60) startPause();
@@ -426,6 +454,9 @@ function roll() {
   phase = 'rolling';
   rollingStart = performance.now();
   stuckLogged = false;
+  // Restore the real bounding box (it was disabled at the end of the
+  // previous roll once dice settled).
+  world.bounds = BOUNDS;
   spawnDice(n);
   // Drop any contact events from the spawn position-clobbering so the very
   // first frame doesn't fire a phantom click.
@@ -461,6 +492,38 @@ bindSoundSlider('s-dhi',  'clickDecayMs', v => Math.round(v).toString());
 bindSoundSlider('s-pf',   'pairHz',       v => Math.round(v).toString());
 bindSoundSlider('s-pd',   'pairDecayMs',  v => Math.round(v).toString());
 bindSoundSlider('s-gain', 'gain',         v => v.toFixed(2));
+
+// Same pattern for the physics panel — each slider live-mutates a
+// property on `world`. World.step() reads these every substep, so
+// changes take effect on the next physics tick.
+function bindPhysicsSlider(id, prop, format) {
+  const slider = document.getElementById(id);
+  const out = document.getElementById(id + '-val');
+  if (!slider || !out) return;
+  slider.value = world[prop];
+  out.textContent = format(world[prop]);
+  slider.addEventListener('input', () => {
+    world[prop] = parseFloat(slider.value);
+    out.textContent = format(world[prop]);
+  });
+}
+// Camera-tilt slider lives in the 'view' panel. Drives renderer.setTilt
+// directly (the renderer owns the camera transform).
+const tiltSlider = document.getElementById('v-tilt');
+const tiltOut    = document.getElementById('v-tilt-val');
+if (tiltSlider && tiltOut) {
+  tiltOut.textContent = Math.round(parseFloat(tiltSlider.value)).toString();
+  tiltSlider.addEventListener('input', () => {
+    const v = parseFloat(tiltSlider.value);
+    tiltOut.textContent = Math.round(v).toString();
+    renderer.setTilt(v);
+  });
+}
+
+bindPhysicsSlider('p-grav', 'gravity',    v => Math.round(v).toString());
+bindPhysicsSlider('p-damp', 'damping',    v => v.toFixed(3));
+bindPhysicsSlider('p-fric', 'friction',   v => v.toFixed(2));
+bindPhysicsSlider('p-iter', 'iterations', v => Math.round(v).toString());
 
 rollBtn.addEventListener('click', userRoll);
 canvas.addEventListener('click', userRoll);

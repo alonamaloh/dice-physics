@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 
-import { V } from './physics.js?v=194dedb';
+import { V } from './physics.js?v=0537416';
 
 // Explicit ColorManagement on — defaults to true in modern Three.js but
 // some Android Chrome builds report it as off, which causes textures to
@@ -54,13 +54,22 @@ export class DiceRenderer {
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color('#f2efe9');
 
-    // Orthographic top-down view (axonometric). View extent is wider than
-    // the dice bounding box so cast shadows that fall beyond the bounds
-    // still have visible floor to land on.
-    this.viewHalfTray = 4.6;
-    this.camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 40);
-    this.camera.up.set(0, 0, -1);
-    this.camera.position.set(0, 15, 0);
+    // Orthographic camera positioned above and slightly behind the
+    // scene (20° default tilt from vertical), looking at the origin.
+    // Parallel projection means dice keep a constant size regardless of
+    // distance — the tilt provides the only perspective cue, in the form
+    // of the floor's foreshortening along Z.
+    this.viewHalfTray = 5.2;
+    this.cameraHeight = 10;
+    this.cameraTiltDeg = 0;
+    const tilt = this.cameraTiltDeg * Math.PI / 180;
+    this.camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 60);
+    this.camera.up.set(0, 1, 0);
+    this.camera.position.set(
+      0,
+      this.cameraHeight * Math.cos(tilt),
+      this.cameraHeight * Math.sin(tilt),
+    );
     this.camera.lookAt(0, 0, 0);
 
     // White lights, all channels multiplied by the same factor — the lit
@@ -168,11 +177,28 @@ export class DiceRenderer {
     window.addEventListener('resize', () => this.resize());
   }
 
+  // Set camera tilt-from-vertical (in degrees), keeping the same focal
+  // distance to the origin and the same lookAt target.
+  setTilt(deg) {
+    this.cameraTiltDeg = deg;
+    const tilt = deg * Math.PI / 180;
+    this.camera.position.set(
+      0,
+      this.cameraHeight * Math.cos(tilt),
+      this.cameraHeight * Math.sin(tilt),
+    );
+    this.camera.lookAt(0, 0, 0);
+  }
+
   resize() {
     const w = this.canvas.clientWidth;
     const h = this.canvas.clientHeight;
     this.renderer.setSize(w, h, false);
     const aspect = w / Math.max(h, 1);
+    // OrthographicCamera uses left/right/top/bottom in world units. Pick
+    // halfH so viewHalfTray fits the smaller dimension: in landscape
+    // the vertical extent is the bottleneck, in portrait widen halfH
+    // by 1/aspect.
     const halfH = aspect >= 1 ? this.viewHalfTray : this.viewHalfTray / aspect;
     this.camera.left   = -halfH * aspect;
     this.camera.right  =  halfH * aspect;
