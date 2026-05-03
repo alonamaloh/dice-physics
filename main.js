@@ -1,6 +1,6 @@
 import * as THREE from 'three';
-import { V, Die, World } from './physics.js?v=7c77431';
-import { DiceRenderer, topFaceValue } from './render.js?v=7c77431';
+import { V, Die, World } from './physics.js?v=dab6904';
+import { DiceRenderer, topFaceValue } from './render.js?v=dab6904';
 
 const canvas = document.getElementById('stage');
 const resultEl = document.getElementById('result');
@@ -20,7 +20,7 @@ const BOUNDS = {minX: -3.6, maxX: 3.6, minZ: -7, maxZ: 7, maxY: 5};
 const DISABLED_BOUNDS = {minX: -1000, maxX: 1000, minZ: -1000, maxZ: 1000};
 
 const world = new World({
-  gravity: -45,
+  gravity: -32,
   damping: 0.997,
   friction: 0.03,
   bounds: BOUNDS,
@@ -63,6 +63,7 @@ function unlockAudio() {
   if (audioCtx.state !== 'running') {
     audioCtx.resume().catch(() => {});
   }
+  updateAudioListener();
 }
 
 // Tunable synth parameters, bound to the on-page slider panel.
@@ -80,7 +81,11 @@ const soundParams = {
 // One short noise burst, exp-decay envelope, bandpass-filtered. Lower
 // `freq` + longer `decayMs` give a thuddier sound; higher freq + shorter
 // decay give a clickier one. Volume scales with the impact speed (m/s).
-function playClick(speed, freq = 2200, decayMs = 10) {
+// `pos`, when given, routes the source through a PannerNode at that
+// world-space location so the listener (camera) hears it from the
+// appropriate direction. Equal-power panning, no distance attenuation
+// (`rolloffFactor: 0` makes the inverse-distance gain a constant 1).
+function playClick(speed, freq = 2200, decayMs = 10, pos = null) {
   if (!audioCtx) return;
   const sr = audioCtx.sampleRate;
   const dur = Math.max(0.05, decayMs / 1000 * 5);
@@ -102,9 +107,49 @@ function playClick(speed, freq = 2200, decayMs = 10) {
   // Volume curve: speed=0.5 m/s → barely audible; 5 m/s → near max.
   const v = Math.max(0, Math.min(1, (speed - 0.4) / 5.0));
   gain.gain.value = v * v * soundParams.gain;
-  src.connect(bp); bp.connect(gain); gain.connect(audioCtx.destination);
+  let tail = gain;
+  if (pos) {
+    const pan = audioCtx.createPanner();
+    pan.panningModel = 'equalpower';
+    pan.distanceModel = 'inverse';
+    pan.refDistance = 1;
+    pan.rolloffFactor = 0; // disable distance attenuation
+    if (pan.positionX) {
+      pan.positionX.value = pos.x;
+      pan.positionY.value = pos.y;
+      pan.positionZ.value = pos.z;
+    } else {
+      pan.setPosition(pos.x, pos.y, pos.z); // older Safari
+    }
+    gain.connect(pan);
+    tail = pan;
+  }
+  src.connect(bp); bp.connect(gain); tail.connect(audioCtx.destination);
   src.start();
   src.stop(audioCtx.currentTime + dur + 0.005);
+}
+
+// Sync the Web Audio listener to the camera. Called on audio unlock and
+// whenever the tilt/distance sliders move.
+function updateAudioListener() {
+  if (!audioCtx) return;
+  const f = renderer.getListenerFrame();
+  const L = audioCtx.listener;
+  if (L.positionX) {
+    L.positionX.value = f.position.x;
+    L.positionY.value = f.position.y;
+    L.positionZ.value = f.position.z;
+    L.forwardX.value = f.forward.x;
+    L.forwardY.value = f.forward.y;
+    L.forwardZ.value = f.forward.z;
+    L.upX.value = f.up.x;
+    L.upY.value = f.up.y;
+    L.upZ.value = f.up.z;
+  } else {
+    L.setPosition(f.position.x, f.position.y, f.position.z);
+    L.setOrientation(f.forward.x, f.forward.y, f.forward.z,
+                     f.up.x, f.up.y, f.up.z);
+  }
 }
 
 function consumeAudioEvents() {
@@ -112,14 +157,18 @@ function consumeAudioEvents() {
   for (const e of world.events) {
     if (e.speed < 0.4) continue; // skip near-silent contacts
     if (e.type === 'ground') {
+      const c = world.dice[e.dieIdx].center();
       // Speed-dependent timbre: low-speed contacts thuddy, high-speed
       // clicky. t ∈ [0,1] interpolates the freq + decay sliders.
       const t = Math.max(0, Math.min(1, (e.speed - 0.5) / 4.5));
       const freq = soundParams.thudHz + t * (soundParams.clickHz - soundParams.thudHz);
       const decayMs = soundParams.thudDecayMs + t * (soundParams.clickDecayMs - soundParams.thudDecayMs);
-      playClick(e.speed, freq, decayMs);
+      playClick(e.speed, freq, decayMs, c);
     } else if (e.type === 'pair') {
-      playClick(e.speed, soundParams.pairHz, soundParams.pairDecayMs);
+      const ca = world.dice[e.i].center();
+      const cb = world.dice[e.j].center();
+      const mid = {x: (ca.x + cb.x) / 2, y: (ca.y + cb.y) / 2, z: (ca.z + cb.z) / 2};
+      playClick(e.speed, soundParams.pairHz, soundParams.pairDecayMs, mid);
     }
   }
   world.events.length = 0;
@@ -507,20 +556,21 @@ function bindPhysicsSlider(id, prop, format) {
     out.textContent = format(world[prop]);
   });
 }
-// Camera-tilt slider lives in the 'view' panel. Drives renderer.setTilt
-// directly (the renderer owns the camera transform).
-const tiltSlider = document.getElementById('v-tilt');
-const tiltOut    = document.getElementById('v-tilt-val');
-if (tiltSlider && tiltOut) {
-  tiltOut.textContent = Math.round(parseFloat(tiltSlider.value)).toString();
-  tiltSlider.addEventListener('input', () => {
-    const v = parseFloat(tiltSlider.value);
-    tiltOut.textContent = Math.round(v).toString();
-    renderer.setTilt(v);
+renderer.setTilt(30);
+const distSlider = document.getElementById('v-dist');
+const distOut    = document.getElementById('v-dist-val');
+if (distSlider && distOut) {
+  const v0 = parseFloat(distSlider.value);
+  distOut.textContent = Math.round(v0).toString();
+  renderer.setDistance(v0);
+  distSlider.addEventListener('input', () => {
+    const v = parseFloat(distSlider.value);
+    distOut.textContent = Math.round(v).toString();
+    renderer.setDistance(v);
+    updateAudioListener();
   });
 }
 
-bindPhysicsSlider('p-grav', 'gravity',    v => Math.round(v).toString());
 bindPhysicsSlider('p-damp', 'damping',    v => v.toFixed(3));
 bindPhysicsSlider('p-fric', 'friction',   v => v.toFixed(2));
 bindPhysicsSlider('p-iter', 'iterations', v => Math.round(v).toString());

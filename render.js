@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 
-import { V } from './physics.js?v=7c77431';
+import { V } from './physics.js?v=dab6904';
 
 // Explicit ColorManagement on — defaults to true in modern Three.js but
 // some Android Chrome builds report it as off, which causes textures to
@@ -54,23 +54,19 @@ export class DiceRenderer {
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color('#f2efe9');
 
-    // Orthographic camera positioned above and slightly behind the
-    // scene (20° default tilt from vertical), looking at the origin.
-    // Parallel projection means dice keep a constant size regardless of
-    // distance — the tilt provides the only perspective cue, in the form
-    // of the floor's foreshortening along Z.
-    this.viewHalfTray = 5.2;
-    this.cameraHeight = 10;
+    // PerspectiveCamera positioned above the scene at `cameraDistance`
+    // from the origin, optionally tilted from vertical. FOV is computed
+    // from `cameraDistance` so the on-screen size of a die at the origin
+    // matches the orthographic baseline (`viewHalfTray` half-height) at
+    // any distance: 2·d·tan(FOV/2) = 2·viewHalfTray. As `cameraDistance`
+    // grows the FOV shrinks and the projection approaches orthographic;
+    // a small distance gives strong perspective.
+    this.viewHalfTray = 7.2;
+    this.cameraDistance = 30;
     this.cameraTiltDeg = 0;
-    const tilt = this.cameraTiltDeg * Math.PI / 180;
-    this.camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 60);
+    this.camera = new THREE.PerspectiveCamera(45, 1, 0.5, 400);
     this.camera.up.set(0, 1, 0);
-    this.camera.position.set(
-      0,
-      this.cameraHeight * Math.cos(tilt),
-      this.cameraHeight * Math.sin(tilt),
-    );
-    this.camera.lookAt(0, 0, 0);
+    this._updateCamera();
 
     // White lights, all channels multiplied by the same factor — the lit
     // floor is just a uniformly-brighter version of its input colour.
@@ -99,10 +95,10 @@ export class DiceRenderer {
       // only contributes 1/N of the darkening so per-light fidelity
       // matters less.
       sun.shadow.mapSize.set(512, 512);
-      sun.shadow.camera.left = -6;
-      sun.shadow.camera.right = 6;
-      sun.shadow.camera.top = 6;
-      sun.shadow.camera.bottom = -6;
+      sun.shadow.camera.left = -8;
+      sun.shadow.camera.right = 8;
+      sun.shadow.camera.top = 8;
+      sun.shadow.camera.bottom = -8;
       sun.shadow.camera.near = 1;
       sun.shadow.camera.far = 30;
       sun.shadow.bias = -0.0005;
@@ -129,6 +125,23 @@ export class DiceRenderer {
     );
     floor.receiveShadow = true;
     this.scene.add(floor);
+
+    // Wireframe of the physics tray, drawn from y=0 (floor) to y=maxY
+    // (ceiling). Useful as a visual reference for where the walls are
+    // when tuning camera distance or tilt.
+    const boxW = this.bounds.maxX - this.bounds.minX;
+    const boxH = this.bounds.maxY;
+    const boxD = this.bounds.maxZ - this.bounds.minZ;
+    const boxGeom = new THREE.BoxGeometry(boxW, boxH, boxD);
+    const edges = new THREE.EdgesGeometry(boxGeom);
+    const lineMat = new THREE.LineBasicMaterial({color: 0x6a6258});
+    this.boundsWireframe = new THREE.LineSegments(edges, lineMat);
+    this.boundsWireframe.position.set(
+      (this.bounds.minX + this.bounds.maxX) / 2,
+      boxH / 2,
+      (this.bounds.minZ + this.bounds.maxZ) / 2,
+    );
+    this.scene.add(this.boundsWireframe);
 
     // Shared materials and geometry. The die body is a single-material
     // RoundedBoxGeometry; pips are separate sphere meshes parented to
@@ -181,30 +194,54 @@ export class DiceRenderer {
   // distance to the origin and the same lookAt target.
   setTilt(deg) {
     this.cameraTiltDeg = deg;
-    const tilt = deg * Math.PI / 180;
+    this._updateCamera();
+  }
+
+  // Set camera distance from the origin. FOV is recomputed so a die at
+  // the origin keeps roughly the same on-screen size.
+  setDistance(d) {
+    this.cameraDistance = d;
+    this._updateCamera();
+  }
+
+  _updateCamera() {
+    const tilt = this.cameraTiltDeg * Math.PI / 180;
     this.camera.position.set(
       0,
-      this.cameraHeight * Math.cos(tilt),
-      this.cameraHeight * Math.sin(tilt),
+      this.cameraDistance * Math.cos(tilt),
+      this.cameraDistance * Math.sin(tilt),
     );
     this.camera.lookAt(0, 0, 0);
+    // FOV chosen so the ±halfH vertical world extent at the origin
+    // matches the orthographic baseline. In portrait the camera widens
+    // its vertical FOV by 1/aspect so the same world width still fits
+    // horizontally — same convention as the orthographic version had.
+    const aspect = this.camera.aspect || 1;
+    const halfH = aspect >= 1 ? this.viewHalfTray : this.viewHalfTray / aspect;
+    this.camera.fov = 2 * Math.atan(halfH / this.cameraDistance) * 180 / Math.PI;
+    this.camera.updateProjectionMatrix();
   }
 
   resize() {
     const w = this.canvas.clientWidth;
     const h = this.canvas.clientHeight;
     this.renderer.setSize(w, h, false);
-    const aspect = w / Math.max(h, 1);
-    // OrthographicCamera uses left/right/top/bottom in world units. Pick
-    // halfH so viewHalfTray fits the smaller dimension: in landscape
-    // the vertical extent is the bottleneck, in portrait widen halfH
-    // by 1/aspect.
-    const halfH = aspect >= 1 ? this.viewHalfTray : this.viewHalfTray / aspect;
-    this.camera.left   = -halfH * aspect;
-    this.camera.right  =  halfH * aspect;
-    this.camera.top    =  halfH;
-    this.camera.bottom = -halfH;
-    this.camera.updateProjectionMatrix();
+    this.camera.aspect = w / Math.max(h, 1);
+    this._updateCamera();
+  }
+
+  // Camera frame in world space, suitable for syncing a Web Audio
+  // listener: position, forward (unit), and up (unit) as plain {x,y,z}.
+  getListenerFrame() {
+    const fwd = new THREE.Vector3();
+    this.camera.getWorldDirection(fwd);
+    const up = new THREE.Vector3(0, 1, 0).applyQuaternion(this.camera.quaternion);
+    const p = this.camera.position;
+    return {
+      position: {x: p.x, y: p.y, z: p.z},
+      forward:  {x: fwd.x, y: fwd.y, z: fwd.z},
+      up:       {x: up.x, y: up.y, z: up.z},
+    };
   }
 
   // Build one die: a Group whose matrix we drive directly each frame, with
